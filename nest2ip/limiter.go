@@ -200,3 +200,18 @@ func backoffFor(failures int) time.Duration {
 	}
 	return backoffLadder[failures-1]
 }
+
+// mediaBackoffLadder is for WebRTC drops after Google said yes (connection fell, no or stopped video).
+var mediaBackoffLadder = []time.Duration{
+	30 * time.Second, 1 * time.Minute, 2 * time.Minute, 5 * time.Minute,
+}
+
+func mediaBackoffFor(failures int) time.Duration {
+	if failures <= 0 {
+		return 0
+	}
+	if failures > len(mediaBackoffLadder) {
+		failures = len(mediaBackoffLadder)
+	}
+	return mediaBackoffLadder[failures-1]
+}

@@ -103,12 +103,29 @@ func (c *Camera) wanted() bool {
 	return time.Since(c.lastDemand) < c.idle
 }
 
-// fail records a failure and schedules the next attempt with backoff (1, 2, 5, 10, 30 min + jitter).
+// isMediaErr is true when Google accepted the call but the WebRTC media failed or was dropped.
+// That costs no extra quota pressure, so it gets a gentler ladder than quota/API errors.
+func isMediaErr(err error) bool {
+	return errors.Is(err, errICE) || errors.Is(err, errNoMedia) || errors.Is(err, errStalled)
+}
+
+// fail records a failure and schedules the next attempt:
+// quota/API errors: 1, 2, 5, 10, 30 min. Media drops: 30 s, 1, 2, 5 min.
+// A session that ran fine for 3 minutes or more resets the count first. Jitter up to +10 %.
 func (c *Camera) fail(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.sessionSince.IsZero() && time.Since(c.sessionSince) >= 3*time.Minute {
+		c.failures = 0
+	}
+	c.sessionSince = time.Time{}
 	c.failures++
-	wait := backoffFor(c.failures)
+	var wait time.Duration
+	if isMediaErr(err) {
+		wait = mediaBackoffFor(c.failures)
+	} else {
+		wait = backoffFor(c.failures)
+	}
 	var ae *APIError
 	if errors.As(err, &ae) && ae.RetryAfter > wait {
 		wait = ae.RetryAfter

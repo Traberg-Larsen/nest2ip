@@ -132,3 +132,15 @@ func TestHACredentials(t *testing.T) {
 		t.Fatal("must not use a Nest entry from another project")
 	}
 }
+
+func TestMediaBackoffLadder(t *testing.T) {
+	want := []time.Duration{0, 30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute, 5 * time.Minute}
+	for i, w := range want {
+		if got := mediaBackoffFor(i); got != w {
+			t.Fatalf("failures=%d: got %v want %v", i, got, w)
+		}
+	}
+	if !isMediaErr(errStalled) || isMediaErr(&APIError{Status: 429}) {
+		t.Fatal("isMediaErr classifies wrongly")
+	}
+}
