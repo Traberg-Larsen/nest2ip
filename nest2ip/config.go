@@ -172,7 +172,7 @@ func resolveCredentials(cfg *Config, haConfigDir string) (Credentials, error) {
 type haEntries struct {
 	Data struct {
 		Entries []struct {
-			Domain   string `json:"domain"`
+			Domain   string          `json:"domain"`
 			Disabled *string         `json:"disabled_by"`
 			Data     json.RawMessage `json:"data"`
 		} `json:"entries"`

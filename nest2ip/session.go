@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -83,8 +84,14 @@ func newAPI() (*webrtc.API, error) {
 	if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
 		return nil, err
 	}
-	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir)), nil
+	s := webrtc.SettingEngine{}
+	s.SetDTLSInsecureSkipHelloVerify(true) // same as go2rtc: avoids DTLS handshake trouble (pion/webrtc#2407)
+	s.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6, webrtc.NetworkTypeTCP4, webrtc.NetworkTypeTCP6})
+	s.SetIPFilter(func(ip net.IP) bool { return !dockerNet.Contains(ip) }) // skip HA's internal Docker networks
+	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(s)), nil
 }
+
+var _, dockerNet, _ = net.ParseCIDR("172.16.0.0/12")
 
 // generateResult is the answer to GenerateWebRtcStream.
 type generateResult struct {
@@ -128,11 +135,34 @@ func (c *Camera) openSession(ctx context.Context) (*Session, error) {
 	if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
 		return nil, err
 	}
-	if _, err := pc.CreateDataChannel("dataSendChannel", nil); err != nil {
+	dc, err := pc.CreateDataChannel("dataSendChannel", nil)
+	if err != nil {
 		return nil, err
 	}
-
+	start := time.Now()
+	since := func() string { return time.Since(start).Round(100 * time.Millisecond).String() }
+	dc.OnOpen(func() { c.logf("diag: datakanal åben (+%s)", since()) })
+	dc.OnClose(func() { c.logf("diag: datakanal lukket (+%s)", since()) })
+	dc.OnMessage(func(m webrtc.DataChannelMessage) {
+		c.logf("diag: besked på datakanal (+%s): %q", since(), truncate(string(m.Data), 200))
+	})
+	pc.OnICEConnectionStateChange(func(st webrtc.ICEConnectionState) {
+		msg := ""
+		if st == webrtc.ICEConnectionStateConnected {
+			if sctp := pc.SCTP(); sctp != nil {
+				if pair, err := sctp.Transport().ICETransport().GetSelectedCandidatePair(); err == nil && pair != nil {
+					msg = fmt.Sprintf(" via %s:%d (%s) -> %s:%d (%s)", pair.Local.Address, pair.Local.Port, pair.Local.Typ, pair.Remote.Address, pair.Remote.Port, pair.Remote.Typ)
+				}
+			}
+		}
+		c.logf("diag: ICE %s (+%s)%s", st, since(), msg)
+	})
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
+		dtls := ""
+		if sctp := pc.SCTP(); sctp != nil {
+			dtls = sctp.Transport().State().String()
+		}
+		c.logf("diag: forbindelse %s (+%s, DTLS %s)", st, since(), dtls)
 		switch st {
 		case webrtc.PeerConnectionStateConnected:
 			s.connOnce.Do(func() { close(s.connected) })
@@ -203,6 +233,7 @@ func (c *Camera) openSession(ctx context.Context) (*Session, error) {
 		return fail(errNoAnswer)
 	}
 	ans := gr.AnswerSdp
+	c.logf("diag: svar-SDP: %s", sdpSummary(ans))
 	if !strings.HasSuffix(ans, "\n") {
 		ans += "\r\n"
 	}
@@ -318,3 +349,17 @@ func (c *Camera) stopSession(s *Session) {
 }
 
 var _ = rtp.Packet{}
+
+// sdpSummary keeps the lines that matter for debugging and drops ICE passwords and fingerprints.
+func sdpSummary(sdp string) string {
+	var keep []string
+	for _, l := range strings.Split(strings.ReplaceAll(sdp, "\r\n", "\n"), "\n") {
+		switch {
+		case strings.HasPrefix(l, "m="), strings.HasPrefix(l, "a=candidate"), strings.HasPrefix(l, "a=rtpmap"),
+			strings.HasPrefix(l, "a=group"), strings.HasPrefix(l, "a=setup"), strings.HasPrefix(l, "a=ice-lite"),
+			l == "a=sendonly", l == "a=recvonly", l == "a=sendrecv", l == "a=inactive":
+			keep = append(keep, l)
+		}
+	}
+	return strings.Join(keep, " | ")
+}
