@@ -40,6 +40,7 @@ cameras:
 - Panelet **nest2ip** i Home Assistants sidepanel viser hvert kamera: tilstand, seneste billede, kald i minuttet og timen, og hvornår næste forsøg er tilladt.
 - `http://<HA-IP>:8787/health` giver det samme som JSON (ingen hemmeligheder).
 - `http://<HA-IP>:8787/snapshot/<kamera>.jpg?key=<path>` giver et stillbillede fra den kørende strøm, uden kald til Google.
+- Sidste billede fra hvert kamera gemmes i appens data (højst hvert 5. minut og ved stop). Efter en genstart sendes det med det samme, med tidsstempel, indtil Google sender video. Ved allerførste start vises et ventebillede. RTSP-klienter står derfor aldrig uden billeder.
 
 ### Forbindelseskvalitet
 

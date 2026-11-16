@@ -61,6 +61,9 @@ type Output struct {
 	filling   bool
 	done      chan struct{}
 
+	placeholder bool      // lastKey is the "waiting for Google" picture, not a camera frame
+	lastSaved   time.Time // when the keyframe was last written to disk
+
 	// The frozen picture with the time it was taken burned in (made once per freeze).
 	stampedKey     [][]byte
 	stampedAU      []byte
@@ -195,6 +198,9 @@ func newOutput(cam *Camera, port, udpBase int) (*Output, error) {
 	if err := o.server.Start(); err != nil {
 		return nil, fmt.Errorf("RTSP-port %d: %w", port, err)
 	}
+	if !o.loadSavedFrame() {
+		go o.makePlaceholder()
+	}
 	go o.fillGaps()
 	return o, nil
 }
@@ -229,7 +235,7 @@ func (o *Output) fillGaps() {
 		key := o.lastKey
 		if o.stampedKey != nil && o.stampedFor.Equal(o.lastKeyAt) {
 			key = o.stampedKey
-		} else if !o.stamping && !o.stampFailedFor.Equal(o.lastKeyAt) {
+		} else if !o.stamping && !o.placeholder && !o.stampFailedFor.Equal(o.lastKeyAt) {
 			o.stamping = true
 			go o.stamp(o.lastKeyAU, o.lastKeyAt)
 		}
@@ -327,6 +333,7 @@ func (o *Output) close() {
 	close(o.done)
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.saveFrameLocked(true)
 	if o.main != nil {
 		o.main.Close()
 	}
@@ -461,6 +468,8 @@ func (o *Output) writeVideo(s *Session, pkt *rtp.Packet) {
 		o.lastKeyAU = buf.Bytes()
 		o.lastKeyAt = now
 		o.lastKey = key
+		o.placeholder = false
+		o.saveFrameLocked(false)
 	}
 }
 
