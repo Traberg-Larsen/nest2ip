@@ -229,9 +229,15 @@ func (o *Output) fillGaps() {
 		}
 		if !o.filling {
 			o.cam.logf("ingen video fra Google: gentager sidste billede, så seerne ikke falder af")
+			if o.active != nil {
+				go o.active.requestKeyframe()
+			}
 		}
 		o.filling = true
 		o.lastFill = time.Now()
+		// Viewers now hold a picture that is not part of the live sequence (and the stamped one has
+		// its own SPS/PPS). Live video must resume at a real keyframe, or P-frames decode as garbage.
+		o.waitingKey = true
 		key := o.lastKey
 		if o.stampedKey != nil && o.stampedFor.Equal(o.lastKeyAt) {
 			key = o.stampedKey
@@ -443,7 +449,7 @@ func (o *Output) writeVideo(s *Session, pkt *rtp.Packet) {
 		o.cam.logf("RTSP-strøm klar (lyd: %v)", o.audioSeen)
 	}
 	if o.waitingKey {
-		if !idr && !h264.IsRandomAccess(au) {
+		if !idr { // a real IDR only: it carries (or gets) the camera's own SPS/PPS
 			go s.requestKeyframe()
 			return
 		}
