@@ -116,7 +116,7 @@ func TestHACredentials(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(dir, ".storage"), 0o755)
 	_ = os.WriteFile(filepath.Join(dir, ".storage", "core.config_entries"), []byte(`{"data":{"entries":[
-	 {"domain":"hue","data":{}},
+	 {"domain":"hue","data":{"token":"a-string-token"}},
 	 {"domain":"nest","disabled_by":null,"data":{"auth_implementation":"nest_x","project_id":"proj-1","token":{"refresh_token":"rt"}}}]}}`), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, ".storage", "application_credentials"), []byte(`{"data":{"items":[
 	 {"id":"other","domain":"nest","auth_domain":"other","client_id":"wrong","client_secret":"wrong"},

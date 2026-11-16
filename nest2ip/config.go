@@ -173,16 +173,19 @@ type haEntries struct {
 	Data struct {
 		Entries []struct {
 			Domain   string `json:"domain"`
-			Disabled *string `json:"disabled_by"`
-			Data     struct {
-				AuthImplementation string `json:"auth_implementation"`
-				ProjectID          string `json:"project_id"`
-				Token              struct {
-					RefreshToken string `json:"refresh_token"`
-				} `json:"token"`
-			} `json:"data"`
+			Disabled *string         `json:"disabled_by"`
+			Data     json.RawMessage `json:"data"`
 		} `json:"entries"`
 	} `json:"data"`
+}
+
+// Other integrations store all kinds of shapes in "data", so it is only parsed for Nest entries.
+type haNestData struct {
+	AuthImplementation string `json:"auth_implementation"`
+	ProjectID          string `json:"project_id"`
+	Token              struct {
+		RefreshToken string `json:"refresh_token"`
+	} `json:"token"`
 }
 
 type haAppCreds struct {
@@ -213,12 +216,16 @@ func loadHACredentials(dir, wantProject string) (Credentials, error) {
 		if e.Domain != "nest" || e.Disabled != nil {
 			continue
 		}
-		if wantProject != "" && e.Data.ProjectID != "" && e.Data.ProjectID != wantProject {
+		var nd haNestData
+		if err := json.Unmarshal(e.Data, &nd); err != nil {
 			continue
 		}
-		out.ProjectID = e.Data.ProjectID
-		out.RefreshToken = e.Data.Token.RefreshToken
-		authImpl = e.Data.AuthImplementation
+		if wantProject != "" && nd.ProjectID != "" && nd.ProjectID != wantProject {
+			continue
+		}
+		out.ProjectID = nd.ProjectID
+		out.RefreshToken = nd.Token.RefreshToken
+		authImpl = nd.AuthImplementation
 		found = true
 		break
 	}
