@@ -61,7 +61,7 @@ type Output struct {
 	filling   bool
 	done      chan struct{}
 
-	// The frozen picture with "FROSSET" and the time it was taken burned in (made once per freeze).
+	// The frozen picture with the time it was taken burned in (made once per freeze).
 	stampedKey     [][]byte
 	stampedAU      []byte
 	stampedFor     time.Time // lastKeyAt the stamped picture belongs to
@@ -162,10 +162,10 @@ func (o *Output) fillGaps() {
 
 const stampFont = "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"
 
-// stamp re-encodes the frozen keyframe once with "FROSSET" and the date and time it was taken.
+// stamp re-encodes the frozen keyframe once with the date and time it was taken.
 // Live video is never re-encoded (the Pi has no hardware H.264 encoder); this is one frame per freeze.
 func (o *Output) stamp(au []byte, at time.Time) {
-	text := "FROSSET  " + strings.ReplaceAll(at.Local().Format("02.01.2006 15:04:05"), ":", `\:`)
+	text := strings.ReplaceAll(at.Local().Format("02.01.2006 15:04:05"), ":", `\:`)
 	vf := fmt.Sprintf("drawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=h/24:box=1:boxcolor=black@0.6:boxborderw=14:x=28:y=28", stampFont, text)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -434,7 +434,7 @@ func (o *Output) Snapshot(ctx context.Context) ([]byte, time.Time, error) {
 	au, at := o.lastKeyAU, o.lastKeyAt
 	stamped := o.filling && o.stampedAU != nil && o.stampedFor.Equal(at)
 	if stamped {
-		au = o.stampedAU // a frozen picture shows "FROSSET" and its time here too
+		au = o.stampedAU // a frozen picture shows its time here too
 	}
 	if o.snapJPEG != nil && o.snapFromAt.Equal(at) && o.snapStamped == stamped {
 		j := o.snapJPEG

@@ -125,7 +125,7 @@ func TestOutputEndToEnd(t *testing.T) {
 		t.Fatalf("no frames while Google is gone: %v %s", err, o)
 	}
 
-	// The frozen picture gets "FROSSET" and its time burned in, and viewers receive that version.
+	// The frozen picture gets its time burned in, and viewers receive that version.
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		out.mu.Lock()

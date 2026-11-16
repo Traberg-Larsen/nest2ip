@@ -11,7 +11,7 @@ Alt kører lokalt i Home Assistant. Intet sendes til andre end Google.
   Kan den ikke forlænges, åbnes en ny session, før den gamle lukker, så billedet ikke fryser.
 - Alle kald til Google går gennem én kvote-vagt:
   højst 8 kald i minuttet for projektet, og højst 4 i minuttet og 60 i timen pr. kamera.
-- Ved kvote- og API-fejl venter nest2ip 1, 2, 5, 10 og derefter 30 minutter. Tabes forbindelsen eller videoen, venter den 30 s, 1, 2 og højst 5 minutter (plus lidt tilfældig spredning). Mens den venter, vises sidste billede med "FROSSET" og det tidspunkt, billedet er fra, brændt ind øverst til venstre. Live-video ændres ikke.
+- Ved kvote- og API-fejl venter nest2ip 1, 2, 5, 10 og derefter 30 minutter. Tabes forbindelsen eller videoen, venter den 30 s, 1, 2 og højst 5 minutter (plus lidt tilfældig spredning). Mens den venter, vises sidste billede med dato og klokkeslæt for, hvornår det er taget, brændt ind øverst til venstre. Live-video har intet tidsstempel (Pi'en har ingen hardware-encoder), så et tidsstempel betyder, at billedet står stille.
   Ved 429 fra Google respekteres `Retry-After`. Der er aldrig faste genforsøg hvert par sekunder.
 - Kommer der ingen video inden for 20 sekunder efter forbindelsen, tæller det som en fejl.
 
