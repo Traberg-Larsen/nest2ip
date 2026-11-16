@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -71,6 +72,7 @@ func main() {
 	go serveHTTP(ctx, app)
 
 	if err == nil {
+		app.loadDeviceCache()
 		go app.findDevices(ctx)
 	}
 	for _, cam := range app.cams {
@@ -85,13 +87,61 @@ func main() {
 	}
 }
 
-// findDevices maps camera names to Google device IDs. It retries with backoff on errors.
+// deviceCache remembers camera -> Google device ID, so a restart can start streams at once
+// even when Google's device list is unavailable (it answered 503 for minutes at a time).
+type deviceCache map[string]struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (app *App) cachePath() string { return env("NEST2IP_DEVICE_CACHE", "/data/devices.json") }
+
+func (app *App) loadDeviceCache() {
+	b, err := os.ReadFile(app.cachePath())
+	if err != nil {
+		return
+	}
+	var dc deviceCache
+	if json.Unmarshal(b, &dc) != nil {
+		return
+	}
+	for _, c := range app.cams {
+		if d, ok := dc[c.slug]; ok && d.ID != "" && (c.cfg.DeviceID == "" || c.cfg.DeviceID == d.ID) {
+			c.mu.Lock()
+			c.deviceID, c.deviceName = d.ID, d.Name
+			c.mu.Unlock()
+			c.logf("bruger gemt kamera-ID fra sidste kørsel (%q)", d.Name)
+		}
+	}
+}
+
+func (app *App) saveDeviceCache() {
+	dc := deviceCache{}
+	for _, c := range app.cams {
+		c.mu.Lock()
+		if c.deviceID != "" {
+			dc[c.slug] = struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			}{c.deviceID, c.deviceName}
+		}
+		c.mu.Unlock()
+	}
+	b, _ := json.MarshalIndent(dc, "", "  ")
+	if err := os.WriteFile(app.cachePath(), b, 0o600); err != nil {
+		log.Printf("kunne ikke gemme kamera-ID'er: %v", err)
+	}
+}
+
+// findDevices maps camera names to Google device IDs. It retries on errors (30 s, 1, 2, 5, 10 min);
+// cameras already known from the cache keep running meanwhile.
 func (app *App) findDevices(ctx context.Context) {
 	failures := 0
 	for ctx.Err() == nil {
 		devs, err := app.g.ListDevices(ctx)
 		if err == nil {
 			app.matchDevices(devs)
+			app.saveDeviceCache()
 			missing := 0
 			for _, c := range app.cams {
 				c.mu.Lock()
@@ -111,7 +161,10 @@ func (app *App) findDevices(ctx context.Context) {
 			app.startErr = "kunne ikke hente kameraer fra Google: " + err.Error()
 		}
 		failures++
-		wait := backoffFor(failures)
+		wait := mediaBackoffFor(failures)
+		if failures > len(mediaBackoffLadder) {
+			wait = 10 * time.Minute
+		}
 		log.Printf("kameraliste: %v. Prøver igen om %s", err, wait)
 		select {
 		case <-ctx.Done():
