@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nest2ip</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --mute:#667085; --ok:#12805c; --warn:#b54708; --bad:#b42318; --line:#e4e7ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111418; --card:#1a1f25; --ink:#e6e8eb; --mute:#98a2b3; --line:#2a313a; --ok:#3ccb8f; --warn:#f5a623; --bad:#f97066; } }
+  body { margin:0; font:15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:1100px; margin:0 auto; padding:20px 16px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--mute); margin-bottom:16px; }
+  .quota { display:flex; gap:16px; flex-wrap:wrap; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 16px; margin-bottom:16px; }
+  .quota b { font-size:18px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:14px; }
+  .cam { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .cam img { width:100%; aspect-ratio:16/9; object-fit:cover; background:#000; display:block; }
+  .body { padding:10px 14px 14px; }
+  .name { font-weight:600; display:flex; justify-content:space-between; gap:8px; }
+  .state { font-size:13px; font-weight:600; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin:8px 0 0; font-size:13px; }
+  dt { color:var(--mute); } dd { margin:0; }
+  .err { margin-top:8px; font-size:12px; color:var(--bad); word-break:break-word; }
+  .problem { background:var(--card); border:1px solid var(--bad); color:var(--bad); border-radius:10px; padding:10px 14px; margin-bottom:16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>nest2ip</h1>
+  <div class="sub" id="sub">Henter status…</div>
+  <div id="problem"></div>
+  <div class="quota" id="quota"></div>
+  <div class="grid" id="cams"></div>
+</main>
+<script>
+const t = d => d ? new Date(d).toLocaleTimeString('da-DK', {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '–';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function cls(c) {
+  if (c.state === 'kører' && c.last_frame_age_s != null && c.last_frame_age_s < 10) return 'ok';
+  if (c.state === 'pause' || !c.device_found) return 'bad';
+  return 'warn';
+}
+async function tick() {
+  try {
+    const h = await (await fetch('health', {cache:'no-store'})).json();
+    document.getElementById('sub').textContent = `Version ${h.version} · oppe i ${h.uptime} · login: ${h.login_source || '–'}`;
+    document.getElementById('problem').innerHTML = h.problem ? `<div class="problem">${esc(h.problem)}</div>` : '';
+    const q = h.quota;
+    document.getElementById('quota').innerHTML =
+      `<div>Google-kald sidste minut<br><b>${q.calls_last_minute} / ${q.limit_per_minute}</b></div>` +
+      `<div>Sidste time<br><b>${q.calls_last_hour}</b></div>` +
+      `<div>429-svar i alt<br><b>${q.total_429}</b></div>` +
+      (q.paused_until ? `<div class="bad">Projekt på pause til<br><b>${t(q.paused_until)}</b></div>` : '');
+    document.getElementById('cams').innerHTML = h.cameras.map(c => `
+      <div class="cam">
+        <img src="snapshot/${c.slug}.jpg?ts=${Date.now()}" alt="" onerror="this.style.visibility='hidden'">
+        <div class="body">
+          <div class="name"><span>${esc(c.name)}</span><span class="state ${cls(c)}">${esc(c.state)}</span></div>
+          <dl>
+            <dt>Seneste billede</dt><dd>${c.last_frame_age_s != null ? c.last_frame_age_s.toFixed(1) + ' s siden' : '–'}</dd>
+            <dt>Seere (RTSP)</dt><dd>${c.clients}</dd>
+            <dt>Session udløber</dt><dd>${t(c.session_expires)}</dd>
+            <dt>Kald min / time</dt><dd>${c.calls_last_minute} / ${c.calls_last_hour}</dd>
+            <dt>Forlængelser</dt><dd>${c.extends_ok} ok, ${c.extends_failed} fejl${c.extend_unsupported ? ' (slået fra)' : ''}</dd>
+            <dt>Sessioner</dt><dd>${c.sessions_started}</dd>
+            ${c.next_allowed_call ? `<dt>Næste forsøg</dt><dd class="bad">${t(c.next_allowed_call)}</dd>` : ''}
+          </dl>
+          ${c.last_error ? `<div class="err">${t(c.last_error_at)}: ${esc(c.last_error)}</div>` : ''}
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    document.getElementById('sub').textContent = 'Kan ikke hente status: ' + e;
+  }
+}
+tick(); setInterval(tick, 5000);
+</script>
+</body>
+</html>
