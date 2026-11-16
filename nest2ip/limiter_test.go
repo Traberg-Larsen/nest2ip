@@ -144,3 +144,19 @@ func TestMediaBackoffLadder(t *testing.T) {
 		t.Fatal("isMediaErr classifies wrongly")
 	}
 }
+
+func TestGapStats(t *testing.T) {
+	o := &Output{start: time.Now().Add(-30 * time.Minute)}
+	now := time.Now()
+	o.lastFrame = now.Add(-3 * time.Second)
+	o.recordGapLocked(now) // a 3 s hole
+	o.lastFrame = now
+	o.recordGapLocked(now.Add(200 * time.Millisecond)) // normal frame spacing: no hole
+	st := o.gapStats()
+	if st.Gaps != 1 || st.LongestSec < 2.9 || st.LongestSec > 3.1 {
+		t.Fatalf("unexpected %+v", st)
+	}
+	if st.Connection != "god" {
+		t.Fatalf("one 3 s hole in 30 min should be god, got %s", st.Connection)
+	}
+}

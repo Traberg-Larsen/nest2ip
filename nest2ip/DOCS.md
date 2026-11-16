@@ -40,3 +40,10 @@ cameras:
 - Panelet **nest2ip** i Home Assistants sidepanel viser hvert kamera: tilstand, seneste billede, kald i minuttet og timen, og hvornår næste forsøg er tilladt.
 - `http://<HA-IP>:8787/health` giver det samme som JSON (ingen hemmeligheder).
 - `http://<HA-IP>:8787/snapshot/<kamera>.jpg?key=<path>` giver et stillbillede fra den kørende strøm, uden kald til Google.
+
+### Forbindelseskvalitet
+
+`/health` og statuspanelet viser for hvert kamera, hvor stabil videoen fra Google har været den seneste time:
+`gaps_last_hour` (huller på 1 s eller mere), `frozen_s_last_hour` og `frozen_pct_last_hour` (hvor længe billedet stod stille),
+`longest_gap_s_last_hour`, `sessions_last_hour` og en samlet vurdering i `connection`: god, svingende, dårlig eller ukendt (under 5 minutters data).
+Har ét kamera mange huller, mens de andre kører jævnt, skyldes det som regel kameraets wifi.

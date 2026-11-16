@@ -38,6 +38,7 @@ type Camera struct {
 	runningSince      time.Time
 	sessionSince      time.Time // when the session now on air started
 	lastQuickRetry    time.Time
+	sessionStarts     []time.Time // Generate calls in the last hour
 
 	wake chan struct{}
 }
@@ -66,6 +67,13 @@ func (c *Camera) setState(s string) {
 func (c *Camera) countSession() {
 	c.mu.Lock()
 	c.sessions++
+	now := time.Now()
+	c.sessionStarts = append(c.sessionStarts, now)
+	i := 0
+	for i < len(c.sessionStarts) && c.sessionStarts[i].Before(now.Add(-time.Hour)) {
+		i++
+	}
+	c.sessionStarts = c.sessionStarts[i:]
 	c.mu.Unlock()
 }
 
@@ -344,10 +352,16 @@ type CameraStatus struct {
 	ExtendUnsupported bool      `json:"extend_unsupported"`
 	LastError         string    `json:"last_error,omitempty"`
 	LastErrorAt       time.Time `json:"last_error_at,omitzero"`
+
+	// How steady the video from the camera has been in the last hour. Many holes while the
+	// other cameras run fine usually means weak wifi at that camera.
+	GapStats
+	SessionsLastHour int `json:"sessions_last_hour"`
 }
 
 func (c *Camera) status() CameraStatus {
 	lastFrame, clients, _ := c.out.status()
+	gs := c.out.gapStats()
 	m, h := c.lim.CameraCounts(c.slug)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -358,6 +372,12 @@ func (c *Camera) status() CameraStatus {
 		BackoffLevel: c.failures, CallsLastMinute: m, CallsLastHour: h,
 		SessionsStarted: c.sessions, ExtendsOK: c.extendsOK, ExtendsFailed: c.extendsFailed,
 		ExtendUnsupported: c.extendUnsupported, LastError: c.lastErr, LastErrorAt: c.lastErrAt,
+		GapStats: gs,
+	}
+	for _, t := range c.sessionStarts {
+		if time.Since(t) < time.Hour {
+			st.SessionsLastHour++
+		}
 	}
 	if time.Now().Before(c.nextAllowed) {
 		st.NextAllowedCall = c.nextAllowed

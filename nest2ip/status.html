@@ -64,7 +64,9 @@ async function tick() {
             <dt>Session udløber</dt><dd>${t(c.session_expires)}</dd>
             <dt>Kald min / time</dt><dd>${c.calls_last_minute} / ${c.calls_last_hour}</dd>
             <dt>Forlængelser</dt><dd>${c.extends_ok} ok, ${c.extends_failed} fejl${c.extend_unsupported ? ' (slået fra)' : ''}</dd>
-            <dt>Sessioner</dt><dd>${c.sessions_started}</dd>
+            <dt>Forbindelse</dt><dd class="${{god:'ok', svingende:'warn', 'dårlig':'bad'}[c.connection] || ''}">${esc(c.connection)}</dd>
+            <dt>Huller sidste time</dt><dd>${c.gaps_last_hour} (frosset ${Math.round(c.frozen_s_last_hour)} s, ${c.frozen_pct_last_hour.toFixed(1)} %, længste ${c.longest_gap_s_last_hour.toFixed(0)} s)</dd>
+            <dt>Sessioner</dt><dd>${c.sessions_started} i alt, ${c.sessions_last_hour} sidste time</dd>
             ${c.next_allowed_call ? `<dt>Næste forsøg</dt><dd class="bad">${t(c.next_allowed_call)}</dd>` : ''}
           </dl>
           ${c.last_error ? `<div class="err">${t(c.last_error_at)}: ${esc(c.last_error)}</div>` : ''}

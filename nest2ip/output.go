@@ -72,6 +72,84 @@ type Output struct {
 	snapStamped    bool
 
 	playing map[*gortsplib.ServerSession]bool
+
+	gaps []gapEvent // holes of 1 s or more in Google's video, last hour
+}
+
+// gapEvent is one hole in the video: when it started and how long it lasted.
+type gapEvent struct {
+	at  time.Time
+	dur time.Duration
+}
+
+// GapStats tells how steady a camera's video has been in the last hour.
+type GapStats struct {
+	Gaps         int     `json:"gaps_last_hour"`
+	FrozenSec    float64 `json:"frozen_s_last_hour"`
+	LongestSec   float64 `json:"longest_gap_s_last_hour"`
+	FrozenPct    float64 `json:"frozen_pct_last_hour"`
+	Connection   string  `json:"connection"` // god / svingende / dårlig / ukendt
+	MeasuredSecs float64 `json:"measured_s"`
+}
+
+// recordGapLocked notes a hole when a frame arrives after 1 s or more without video.
+// Holes over 15 minutes are left out (an on-demand camera that was resting).
+func (o *Output) recordGapLocked(now time.Time) {
+	if !o.lastFrame.IsZero() {
+		if d := now.Sub(o.lastFrame); d >= time.Second && d < 15*time.Minute {
+			o.gaps = append(o.gaps, gapEvent{at: o.lastFrame, dur: d})
+		}
+	}
+	cut := now.Add(-time.Hour)
+	i := 0
+	for i < len(o.gaps) && o.gaps[i].at.Before(cut) {
+		i++
+	}
+	o.gaps = o.gaps[i:]
+}
+
+func (o *Output) gapStats() GapStats {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	now := time.Now()
+	var st GapStats
+	cut := now.Add(-time.Hour)
+	add := func(d time.Duration) {
+		st.Gaps++
+		st.FrozenSec += d.Seconds()
+		if d.Seconds() > st.LongestSec {
+			st.LongestSec = d.Seconds()
+		}
+	}
+	for _, g := range o.gaps {
+		if g.at.After(cut) {
+			add(g.dur)
+		}
+	}
+	if !o.lastFrame.IsZero() {
+		if d := now.Sub(o.lastFrame); d >= time.Second && d < 15*time.Minute {
+			add(d) // the hole we are in right now
+		}
+	}
+	from := o.start
+	if from.Before(cut) {
+		from = cut
+	}
+	st.MeasuredSecs = now.Sub(from).Seconds()
+	if st.MeasuredSecs > 0 {
+		st.FrozenPct = 100 * st.FrozenSec / st.MeasuredSecs
+	}
+	switch {
+	case st.MeasuredSecs < 300:
+		st.Connection = "ukendt"
+	case st.FrozenPct < 1 && st.Gaps <= 3:
+		st.Connection = "god"
+	case st.FrozenPct < 5:
+		st.Connection = "svingende"
+	default:
+		st.Connection = "dårlig"
+	}
+	return st
 }
 
 // tsMap maps one session's RTP timestamps onto our continuous output timeline.
@@ -369,6 +447,7 @@ func (o *Output) writeVideo(s *Session, pkt *rtp.Packet) {
 	}
 	o.writeAULocked(au, o.vMap.out(pkt.Timestamp, 90000, o.start))
 	now := time.Now()
+	o.recordGapLocked(now)
 	o.lastFrame = now
 	s.frames.Add(1)
 	if idr {
