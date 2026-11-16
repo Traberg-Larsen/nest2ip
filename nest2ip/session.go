@@ -44,7 +44,8 @@ type Session struct {
 	firSeq   atomic.Uint32
 	lastFIR  atomic.Int64
 
-	lastRTP   atomic.Int64 // unix nanos of the last video RTP packet
+	lastRTP   atomic.Int64  // unix nanos of the last video RTP packet
+	frames    atomic.Uint64 // access units written to RTSP
 	connected chan struct{}
 	firstRTP  chan struct{}
 	dead      chan struct{}
@@ -261,7 +262,7 @@ func (c *Camera) openSession(ctx context.Context) (*Session, error) {
 		return fail(ctx.Err())
 	}
 	ok = true
-	go s.watchStall()
+	go s.watchStall(c)
 	return s, nil
 }
 
@@ -277,10 +278,13 @@ func (s *Session) close() {
 	_ = s.pc.Close()
 }
 
-// watchStall marks the session dead when video stops for 15 s.
-func (s *Session) watchStall() {
+// watchStall marks the session dead when video stops for 15 s, and logs receive stats every 15 s.
+func (s *Session) watchStall(c *Camera) {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
+	var lastBytes uint64
+	var lastFrames uint64
+	lastLog := time.Now()
 	for {
 		select {
 		case <-s.dead:
@@ -290,6 +294,22 @@ func (s *Session) watchStall() {
 				s.kill(errStalled)
 				return
 			}
+			if time.Since(lastLog) < 15*time.Second {
+				continue
+			}
+			for _, st := range s.pc.GetStats() {
+				in, ok := st.(webrtc.InboundRTPStreamStats)
+				if !ok || in.Kind != "video" {
+					continue
+				}
+				secs := time.Since(lastLog).Seconds()
+				frames := s.frames.Load()
+				c.logf("diag: video %.0f kbit/s, %.1f fps ud, pakker %d (tabt %d), NACK %d, PLI %d, FIR %d",
+					float64(in.BytesReceived-lastBytes)*8/1000/secs, float64(frames-lastFrames)/secs,
+					in.PacketsReceived, in.PacketsLost, in.NACKCount, in.PLICount, in.FIRCount)
+				lastBytes, lastFrames = in.BytesReceived, frames
+			}
+			lastLog = time.Now()
 		}
 	}
 }
@@ -357,6 +377,7 @@ func sdpSummary(sdp string) string {
 		switch {
 		case strings.HasPrefix(l, "m="), strings.HasPrefix(l, "a=candidate"), strings.HasPrefix(l, "a=rtpmap"),
 			strings.HasPrefix(l, "a=group"), strings.HasPrefix(l, "a=setup"), strings.HasPrefix(l, "a=ice-lite"),
+			strings.HasPrefix(l, "a=extmap"), strings.HasPrefix(l, "a=rtcp-fb"), strings.HasPrefix(l, "a=fmtp"),
 			l == "a=sendonly", l == "a=recvonly", l == "a=sendrecv", l == "a=inactive":
 			keep = append(keep, l)
 		}

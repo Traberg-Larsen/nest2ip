@@ -241,6 +241,7 @@ func (o *Output) writeVideo(s *Session, pkt *rtp.Packet) {
 	}
 	now := time.Now()
 	o.lastFrame = now
+	s.frames.Add(1)
 	if idr {
 		var buf bytes.Buffer
 		for _, n := range au {
