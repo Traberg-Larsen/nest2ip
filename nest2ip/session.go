@@ -278,7 +278,7 @@ func (s *Session) close() {
 	_ = s.pc.Close()
 }
 
-// watchStall marks the session dead when video stops for 15 s, and logs receive stats every 15 s.
+// watchStall marks the session dead when video stops for 15 s, and logs receive stats every 5 min.
 func (s *Session) watchStall(c *Camera) {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
@@ -294,7 +294,7 @@ func (s *Session) watchStall(c *Camera) {
 				s.kill(errStalled)
 				return
 			}
-			if time.Since(lastLog) < 15*time.Second {
+			if time.Since(lastLog) < 5*time.Minute {
 				continue
 			}
 			for _, st := range s.pc.GetStats() {
