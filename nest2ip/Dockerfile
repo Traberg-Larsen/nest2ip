@@ -3,10 +3,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go status.html ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=0.1.8" -o /nest2ip .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=0.1.9" -o /nest2ip .
 
 FROM alpine:3.22
-RUN apk add --no-cache ffmpeg ca-certificates tzdata
+RUN apk add --no-cache ffmpeg ca-certificates tzdata font-dejavu
 COPY --from=build /nest2ip /usr/local/bin/nest2ip
 ENV TZ=Europe/Copenhagen
 CMD ["/usr/local/bin/nest2ip"]

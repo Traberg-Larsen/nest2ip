@@ -124,26 +124,33 @@ func TestOutputEndToEnd(t *testing.T) {
 	if o, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("no frames while Google is gone: %v %s", err, o)
 	}
-}
 
-func splitAnnexB(b []byte) [][]byte {
-	var out [][]byte
-	start := -1
-	for i := 0; i+3 <= len(b); i++ {
-		if b[i] == 0 && b[i+1] == 0 && b[i+2] == 1 {
-			if start >= 0 {
-				end := i
-				if end > start && b[end-1] == 0 {
-					end--
-				}
-				out = append(out, b[start:end])
-			}
-			start = i + 3
-			i += 2
+	// The frozen picture gets "FROSSET" and its time burned in, and viewers receive that version.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		out.mu.Lock()
+		ok := out.stampedKey != nil
+		out.mu.Unlock()
+		if ok {
+			break
 		}
+		if time.Now().After(deadline) {
+			t.Fatal("stamped frozen picture was never made")
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	if start >= 0 && start < len(b) {
-		out = append(out, b[start:])
+	shot := dir + "/frozen.jpg"
+	cmd = exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-rtsp_transport", "tcp", "-timeout", "5000000",
+		"-i", "rtsp://127.0.0.1:18554/secret", "-frames:v", "1", shot)
+	if o, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("read stamped frozen frame: %v %s", err, o)
 	}
-	return out
+	if dst := os.Getenv("NEST2IP_SAVE_FROZEN"); dst != "" {
+		b, _ := os.ReadFile(shot)
+		_ = os.WriteFile(dst, b, 0o644)
+	}
+	jpg, _, err = out.Snapshot(context.Background())
+	if err != nil || len(jpg) < 1000 {
+		t.Fatalf("stamped snapshot: %v", err)
+	}
 }

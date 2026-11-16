@@ -52,16 +52,24 @@ type Output struct {
 	audioSeen  bool      // the camera sends audio: include an audio track in the RTSP description
 	firstVideo time.Time // when we first had SPS/PPS; we wait up to 3 s for audio before describing
 
-	lastFrame  time.Time
-	lastKeyAU  []byte // Annex-B, SPS+PPS+IDR
-	lastKeyAt  time.Time
-	lastKey    [][]byte // the same keyframe as NAL units, repeated while Google is gone
-	lastOutTS  uint32   // last video RTP timestamp sent, so output time never runs backwards
-	lastFill   time.Time
-	filling    bool
-	done       chan struct{}
-	snapJPEG   []byte
-	snapFromAt time.Time
+	lastFrame time.Time
+	lastKeyAU []byte // Annex-B, SPS+PPS+IDR
+	lastKeyAt time.Time
+	lastKey   [][]byte // the same keyframe as NAL units, repeated while Google is gone
+	lastOutTS uint32   // last video RTP timestamp sent, so output time never runs backwards
+	lastFill  time.Time
+	filling   bool
+	done      chan struct{}
+
+	// The frozen picture with "FROSSET" and the time it was taken burned in (made once per freeze).
+	stampedKey     [][]byte
+	stampedAU      []byte
+	stampedFor     time.Time // lastKeyAt the stamped picture belongs to
+	stamping       bool
+	stampFailedFor time.Time
+	snapJPEG       []byte
+	snapFromAt     time.Time
+	snapStamped    bool
 
 	playing map[*gortsplib.ServerSession]bool
 }
@@ -140,9 +148,80 @@ func (o *Output) fillGaps() {
 		}
 		o.filling = true
 		o.lastFill = time.Now()
-		o.writeAULocked(o.lastKey, uint32(time.Since(o.start).Seconds()*90000))
+		key := o.lastKey
+		if o.stampedKey != nil && o.stampedFor.Equal(o.lastKeyAt) {
+			key = o.stampedKey
+		} else if !o.stamping && !o.stampFailedFor.Equal(o.lastKeyAt) {
+			o.stamping = true
+			go o.stamp(o.lastKeyAU, o.lastKeyAt)
+		}
+		o.writeAULocked(key, uint32(time.Since(o.start).Seconds()*90000))
 		o.mu.Unlock()
 	}
+}
+
+const stampFont = "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"
+
+// stamp re-encodes the frozen keyframe once with "FROSSET" and the date and time it was taken.
+// Live video is never re-encoded (the Pi has no hardware H.264 encoder); this is one frame per freeze.
+func (o *Output) stamp(au []byte, at time.Time) {
+	text := "FROSSET  " + strings.ReplaceAll(at.Local().Format("02.01.2006 15:04:05"), ":", `\:`)
+	vf := fmt.Sprintf("drawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=h/24:box=1:boxcolor=black@0.6:boxborderw=14:x=28:y=28", stampFont, text)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "h264", "-i", "pipe:0",
+		"-frames:v", "1", "-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-profile:v", "high",
+		"-pix_fmt", "yuv420p", "-x264-params", "keyint=1", "-f", "h264", "pipe:1")
+	cmd.Stdin = bytes.NewReader(au)
+	var out, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &stderr
+	err := cmd.Run()
+	var nalus [][]byte
+	if err == nil {
+		for _, n := range splitAnnexB(out.Bytes()) {
+			// keep parameter sets and the picture; drop SEI and the like
+			switch h264.NALUType(n[0] & 0x1f) {
+			case h264.NALUTypeSPS, h264.NALUTypePPS, h264.NALUTypeIDR:
+				nalus = append(nalus, n)
+			}
+		}
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.stamping = false
+	if err != nil || len(nalus) < 3 {
+		o.stampFailedFor = at
+		o.cam.logf("kunne ikke skrive tidsstempel på det frosne billede: %v %s", err, truncate(stderr.String(), 200))
+		return
+	}
+	if o.lastKeyAt.Equal(at) {
+		o.stampedKey, o.stampedAU, o.stampedFor = nalus, out.Bytes(), at
+	}
+}
+
+// splitAnnexB splits an H.264 Annex-B byte stream into NAL units.
+func splitAnnexB(b []byte) [][]byte {
+	var out [][]byte
+	start := -1
+	for i := 0; i+3 <= len(b); i++ {
+		if b[i] == 0 && b[i+1] == 0 && b[i+2] == 1 {
+			if start >= 0 {
+				end := i
+				for end > start && b[end-1] == 0 {
+					end--
+				}
+				if end > start {
+					out = append(out, b[start:end])
+				}
+			}
+			start = i + 3
+			i += 2
+		}
+	}
+	if start >= 0 && start < len(b) {
+		out = append(out, b[start:])
+	}
+	return out
 }
 
 // writeAULocked sends one access unit to all RTSP viewers, never letting time run backwards.
@@ -353,16 +432,16 @@ func (o *Output) status() (lastFrame time.Time, clients int, ready bool) {
 func (o *Output) Snapshot(ctx context.Context) ([]byte, time.Time, error) {
 	o.mu.Lock()
 	au, at := o.lastKeyAU, o.lastKeyAt
-	if o.snapJPEG != nil && o.snapFromAt.Equal(at) {
+	stamped := o.filling && o.stampedAU != nil && o.stampedFor.Equal(at)
+	if stamped {
+		au = o.stampedAU // a frozen picture shows "FROSSET" and its time here too
+	}
+	if o.snapJPEG != nil && o.snapFromAt.Equal(at) && o.snapStamped == stamped {
 		j := o.snapJPEG
 		o.mu.Unlock()
 		return j, at, nil
 	}
-	active := o.active
 	o.mu.Unlock()
-	if active != nil {
-		go active.requestKeyframe() // so the next snapshot is fresher
-	}
 	if au == nil {
 		return nil, time.Time{}, errors.New("intet billede endnu")
 	}
@@ -377,7 +456,7 @@ func (o *Output) Snapshot(ctx context.Context) ([]byte, time.Time, error) {
 		return nil, time.Time{}, fmt.Errorf("ffmpeg: %v %s", err, truncate(stderr.String(), 200))
 	}
 	o.mu.Lock()
-	o.snapJPEG, o.snapFromAt = out.Bytes(), at
+	o.snapJPEG, o.snapFromAt, o.snapStamped = out.Bytes(), at, stamped
 	o.mu.Unlock()
 	return out.Bytes(), at, nil
 }

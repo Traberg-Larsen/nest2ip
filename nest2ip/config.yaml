@@ -1,5 +1,5 @@
 name: nest2ip
-version: "0.1.8"
+version: "0.1.9"
 slug: nest2ip
 description: Google Nest-kameraer som almindelige RTSP-streams, lokalt og kvotesikkert
 arch:
