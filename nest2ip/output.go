@@ -127,14 +127,14 @@ func (o *Output) createStreamsLocked() error {
 		o.aMain = &description.Media{Type: description.MediaTypeAudio, Formats: []format.Format{&format.Opus{PayloadTyp: 97, ChannelCount: 2}}}
 		medias = append(medias, o.aMain)
 	}
-	o.main = &gortsplib.ServerStream{Server: o.server, Desc: &description.Session{Medias: medias}}
+	o.main = &gortsplib.ServerStream{Server: o.server, Desc: &description.Session{Title: "nest2ip", Medias: medias}}
 	if err := o.main.Initialize(); err != nil {
 		return err
 	}
 	if o.mutedPath != "" {
 		o.fMuted = &format.H264{PayloadTyp: 96, PacketizationMode: 1, SPS: o.sps, PPS: o.pps}
 		o.vMuted = &description.Media{Type: description.MediaTypeVideo, Formats: []format.Format{o.fMuted}}
-		o.muted = &gortsplib.ServerStream{Server: o.server, Desc: &description.Session{Medias: []*description.Media{o.vMuted}}}
+		o.muted = &gortsplib.ServerStream{Server: o.server, Desc: &description.Session{Title: "nest2ip", Medias: []*description.Media{o.vMuted}}}
 		if err := o.muted.Initialize(); err != nil {
 			return err
 		}

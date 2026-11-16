@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"testing"
@@ -76,6 +77,21 @@ func TestOutputEndToEnd(t *testing.T) {
 	case <-out.ready:
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream never became ready")
+	}
+	// Media3 (TVBliz) rejects an empty session name ("s= "), so DESCRIBE must carry a real one.
+	for _, p := range []string{"secret", "mutedsecret"} {
+		conn, err := net.Dial("tcp", "127.0.0.1:18554")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = conn.Write([]byte("DESCRIBE rtsp://127.0.0.1:18554/" + p + " RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\r\n"))
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 8192)
+		n, _ := conn.Read(buf)
+		conn.Close()
+		if !bytes.Contains(buf[:n], []byte("\r\ns=nest2ip\r\n")) {
+			t.Fatalf("%s: SDP has no s=nest2ip line:\n%s", p, buf[:n])
+		}
 	}
 	for _, p := range []string{"secret", "mutedsecret"} {
 		cmd := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "udp",
