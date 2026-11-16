@@ -36,6 +36,8 @@ type Camera struct {
 	extendUnsupported bool
 	expiresAt         time.Time
 	runningSince      time.Time
+	sessionSince      time.Time // when the session now on air started
+	lastQuickRetry    time.Time
 
 	wake chan struct{}
 }
@@ -161,9 +163,27 @@ func (c *Camera) run(ctx context.Context) {
 		}
 		err = c.keepAlive(ctx, s)
 		if err != nil && ctx.Err() == nil {
+			if c.quickRetryOK() {
+				continue
+			}
 			c.fail(err)
 		}
 	}
+}
+
+// quickRetryOK allows one immediate reconnect when Google drops a session that had run fine
+// for at least a minute, at most once every 2 minutes. Anything else goes through the backoff ladder.
+func (c *Camera) quickRetryOK() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ran := time.Since(c.sessionSince)
+	if c.sessionSince.IsZero() || ran < time.Minute || time.Since(c.lastQuickRetry) < 2*time.Minute {
+		return false
+	}
+	c.lastQuickRetry = time.Now()
+	c.state = "forbinder igen"
+	log.Printf("[%s] Google lukkede sessionen efter %s: forbinder igen med det samme", c.slug, ran.Round(time.Second))
+	return true
 }
 
 // keepAlive serves one session (and its replacements) until it can no longer be kept running.
@@ -173,6 +193,7 @@ func (c *Camera) keepAlive(ctx context.Context, s *Session) error {
 	c.mu.Lock()
 	c.state = "kører"
 	c.runningSince = time.Now()
+	c.sessionSince = time.Now()
 	c.expiresAt = s.ExpiresAt
 	c.mu.Unlock()
 	c.logf("strøm kører (session %d, udløber %s)", s.ID, s.ExpiresAt.Local().Format("15:04:05"))
@@ -276,6 +297,7 @@ func (c *Camera) keepAlive(ctx context.Context, s *Session) error {
 		s = ns
 		c.mu.Lock()
 		c.state = "kører"
+		c.sessionSince = time.Now()
 		c.expiresAt = s.ExpiresAt
 		c.mu.Unlock()
 		c.logf("skiftet til ny session %d (udløber %s)", s.ID, s.ExpiresAt.Local().Format("15:04:05"))

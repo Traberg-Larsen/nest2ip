@@ -115,6 +115,15 @@ func TestOutputEndToEnd(t *testing.T) {
 		t.Fatalf("snapshot: %v len=%d", err, len(jpg))
 	}
 	t.Logf("snapshot %d bytes", len(jpg))
+
+	// Google's video stops: viewers must keep getting (repeated) keyframes instead of timing out.
+	cancel()
+	time.Sleep(3 * time.Second)
+	cmd = exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-timeout", "5000000",
+		"-i", "rtsp://127.0.0.1:18554/secret", "-frames:v", "4", "-f", "null", "-")
+	if o, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("no frames while Google is gone: %v %s", err, o)
+	}
 }
 
 func splitAnnexB(b []byte) [][]byte {

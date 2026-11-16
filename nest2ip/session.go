@@ -25,7 +25,7 @@ const (
 
 var (
 	errNoMedia  = errors.New("forbundet, men ingen video fra Google inden for 20 s")
-	errStalled  = errors.New("videoen fra Google stoppede")
+	errStalled  = errors.New("videoen fra Google stoppede i 8 s")
 	errICE      = errors.New("WebRTC-forbindelsen til Google faldt")
 	errNoAnswer = errors.New("Google gav intet svar-SDP")
 )
@@ -44,15 +44,17 @@ type Session struct {
 	firSeq   atomic.Uint32
 	lastFIR  atomic.Int64
 
-	lastRTP   atomic.Int64  // unix nanos of the last video RTP packet
-	frames    atomic.Uint64 // access units written to RTSP
-	connected chan struct{}
-	firstRTP  chan struct{}
-	dead      chan struct{}
-	deadErr   error
-	deadOnce  sync.Once
-	connOnce  sync.Once
-	firstOnce sync.Once
+	lastRTP    atomic.Int64  // unix nanos of the last video RTP packet
+	closing    atomic.Bool   // we are closing it ourselves
+	remoteGone atomic.Bool   // Google closed it
+	frames     atomic.Uint64 // access units written to RTSP
+	connected  chan struct{}
+	firstRTP   chan struct{}
+	dead       chan struct{}
+	deadErr    error
+	deadOnce   sync.Once
+	connOnce   sync.Once
+	firstOnce  sync.Once
 }
 
 func newAPI() (*webrtc.API, error) {
@@ -168,6 +170,9 @@ func (c *Camera) openSession(ctx context.Context) (*Session, error) {
 		case webrtc.PeerConnectionStateConnected:
 			s.connOnce.Do(func() { close(s.connected) })
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			if !s.closing.Load() {
+				s.remoteGone.Store(true) // Google ended it; a Stop call would only cost quota and get 404
+			}
 			s.kill(errICE)
 		}
 	})
@@ -274,11 +279,12 @@ func (s *Session) kill(err error) {
 }
 
 func (s *Session) close() {
+	s.closing.Store(true)
 	s.kill(errors.New("lukket"))
 	_ = s.pc.Close()
 }
 
-// watchStall marks the session dead when video stops for 15 s, and logs receive stats every 5 min.
+// watchStall marks the session dead when video stops for 8 s, and logs receive stats every 5 min.
 func (s *Session) watchStall(c *Camera) {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
@@ -290,7 +296,7 @@ func (s *Session) watchStall(c *Camera) {
 		case <-s.dead:
 			return
 		case <-t.C:
-			if time.Since(time.Unix(0, s.lastRTP.Load())) > 15*time.Second {
+			if time.Since(time.Unix(0, s.lastRTP.Load())) > 8*time.Second {
 				s.kill(errStalled)
 				return
 			}
@@ -356,7 +362,7 @@ func (c *Camera) extendSession(ctx context.Context, s *Session) error {
 // stopSession closes the session locally and tells Google, but only if there is budget right now.
 func (c *Camera) stopSession(s *Session) {
 	s.close()
-	if s.MediaID == "" {
+	if s.MediaID == "" || s.remoteGone.Load() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

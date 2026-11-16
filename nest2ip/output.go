@@ -55,6 +55,11 @@ type Output struct {
 	lastFrame  time.Time
 	lastKeyAU  []byte // Annex-B, SPS+PPS+IDR
 	lastKeyAt  time.Time
+	lastKey    [][]byte // the same keyframe as NAL units, repeated while Google is gone
+	lastOutTS  uint32   // last video RTP timestamp sent, so output time never runs backwards
+	lastFill   time.Time
+	filling    bool
+	done       chan struct{}
 	snapJPEG   []byte
 	snapFromAt time.Time
 
@@ -92,6 +97,7 @@ func newOutput(cam *Camera, port, udpBase int) (*Output, error) {
 		audioSSRC: randUint32(),
 		start:     time.Now(),
 		playing:   map[*gortsplib.ServerSession]bool{},
+		done:      make(chan struct{}),
 	}
 	o.server = &gortsplib.Server{
 		Handler:        o,
@@ -103,10 +109,65 @@ func newOutput(cam *Camera, port, udpBase int) (*Output, error) {
 	if err := o.server.Start(); err != nil {
 		return nil, fmt.Errorf("RTSP-port %d: %w", port, err)
 	}
+	go o.fillGaps()
 	return o, nil
 }
 
+// fillGaps keeps viewers connected while Google's video is missing (a session dropped and a
+// new one is being opened): it repeats the last keyframe once a second, so players show a
+// frozen picture until a new session takes over seamlessly. /health shows how old the picture is.
+func (o *Output) fillGaps() {
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-o.done:
+			return
+		case <-t.C:
+		}
+		o.mu.Lock()
+		gap := time.Since(o.lastFrame)
+		if o.main == nil || o.lastKey == nil || gap < 1500*time.Millisecond ||
+			time.Since(o.lastFill) < time.Second {
+			if gap < 1500*time.Millisecond {
+				o.filling = false
+			}
+			o.mu.Unlock()
+			continue
+		}
+		if !o.filling {
+			o.cam.logf("ingen video fra Google: gentager sidste billede, så seerne ikke falder af")
+		}
+		o.filling = true
+		o.lastFill = time.Now()
+		o.writeAULocked(o.lastKey, uint32(time.Since(o.start).Seconds()*90000))
+		o.mu.Unlock()
+	}
+}
+
+// writeAULocked sends one access unit to all RTSP viewers, never letting time run backwards.
+func (o *Output) writeAULocked(au [][]byte, ts uint32) {
+	if o.lastOutTS != 0 && int32(ts-o.lastOutTS) <= 0 {
+		adj := o.lastOutTS - ts + 1500
+		o.vMap.base += adj
+		ts += adj
+	}
+	pkts, err := o.enc.Encode(au)
+	if err != nil {
+		return
+	}
+	for _, p := range pkts {
+		p.Timestamp = ts
+		_ = o.main.WritePacketRTP(o.vMain, p)
+		if o.muted != nil {
+			_ = o.muted.WritePacketRTP(o.vMuted, p)
+		}
+	}
+	o.lastOutTS = ts
+}
+
 func (o *Output) close() {
+	close(o.done)
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.main != nil {
@@ -227,29 +288,21 @@ func (o *Output) writeVideo(s *Session, pkt *rtp.Packet) {
 	if idr && sps == nil {
 		au = append([][]byte{o.sps, o.pps}, au...) // late joiners always get parameters
 	}
-	ts := o.vMap.out(pkt.Timestamp, 90000, o.start)
-	pkts, err := o.enc.Encode(au)
-	if err != nil {
-		return
-	}
-	for _, p := range pkts {
-		p.Timestamp = ts
-		_ = o.main.WritePacketRTP(o.vMain, p)
-		if o.muted != nil {
-			_ = o.muted.WritePacketRTP(o.vMuted, p)
-		}
-	}
+	o.writeAULocked(au, o.vMap.out(pkt.Timestamp, 90000, o.start))
 	now := time.Now()
 	o.lastFrame = now
 	s.frames.Add(1)
 	if idr {
 		var buf bytes.Buffer
+		key := make([][]byte, 0, len(au))
 		for _, n := range au {
 			buf.Write([]byte{0, 0, 0, 1})
 			buf.Write(n)
+			key = append(key, append([]byte(nil), n...))
 		}
 		o.lastKeyAU = buf.Bytes()
 		o.lastKeyAt = now
+		o.lastKey = key
 	}
 }
 
