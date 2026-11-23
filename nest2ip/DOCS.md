@@ -19,6 +19,8 @@ Alt kører lokalt i Home Assistant. Intet sendes til andre end Google.
 
 - **Google-login:** Med `use_home_assistant_login: true` genbruger nest2ip den Nest-login, som
   Home Assistants Nest-integration allerede har. Hemmeligheder vises aldrig i log eller status.
+  Hvis Google afviser login-nøglen (udløbet eller tilbagekaldt), læser nest2ip Home Assistants
+  Nest-login igen, så kameraerne kommer tilbage af sig selv, når integrationen er logget ind igen.
   Du kan også udfylde `client_id`, `client_secret` og `refresh_token` selv.
 - **Kameraer:** `name` skal svare til kameraets navn hos Google (store/små bogstaver og æøå er ligegyldige).
   `port` og `path` bestemmer RTSP-adressen: `rtsp://<HA-IP>:<port>/<path>`.

@@ -15,10 +15,10 @@ import (
 	"time"
 )
 
-const (
-	tokenURL = "https://oauth2.googleapis.com/token"
-	sdmBase  = "https://smartdevicemanagement.googleapis.com/v1"
-)
+const sdmBase = "https://smartdevicemanagement.googleapis.com/v1"
+
+// tokenURL is a variable so tests can point it at a fake Google.
+var tokenURL = "https://oauth2.googleapis.com/token"
 
 // APIError is a non-200 answer from Google.
 type APIError struct {
@@ -41,6 +41,9 @@ type Google struct {
 	creds   Credentials
 	limiter *Limiter
 	httpc   *http.Client
+	// reload re-reads the login (Home Assistant's Nest integration). It is nil when the
+	// login comes from the options, which only change when the app restarts anyway.
+	reload func() (Credentials, error)
 
 	mu      sync.Mutex
 	access  string
@@ -51,12 +54,54 @@ func NewGoogle(creds Credentials, lim *Limiter) *Google {
 	return &Google{creds: creds, limiter: lim, httpc: &http.Client{Timeout: 30 * time.Second}}
 }
 
+// SetReload lets the token refresh pick up a new login after Google rejects the old one,
+// e.g. when the Nest integration in Home Assistant has been signed in again.
+func (g *Google) SetReload(f func() (Credentials, error)) {
+	g.mu.Lock()
+	g.reload = f
+	g.mu.Unlock()
+}
+
 func (g *Google) token(ctx context.Context) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.access != "" && time.Until(g.expires) > 2*time.Minute {
 		return g.access, nil
 	}
+	err := g.refreshLocked(ctx)
+	// Google answers 400 invalid_grant when the refresh token has expired or been revoked.
+	// Home Assistant gets a new one when the Nest integration is signed in again, so read
+	// its login again and retry once if it changed. Reading a local file costs no quota.
+	if err != nil && g.reload != nil && (isStatus(err, 400) || isStatus(err, 401)) {
+		fresh, rerr := g.reload()
+		switch {
+		case rerr != nil:
+			log.Printf("Google afviste login-nøglen, og Home Assistants Nest-login kunne ikke læses igen: %v", rerr)
+		case fresh.RefreshToken == g.creds.RefreshToken && fresh.ClientID == g.creds.ClientID && fresh.ClientSecret == g.creds.ClientSecret:
+			// Same login as before: Home Assistant has not been signed in again yet.
+		default:
+			log.Printf("Google afviste login-nøglen; bruger Home Assistants nye Nest-login")
+			if fresh.ProjectID == "" {
+				fresh.ProjectID = g.creds.ProjectID
+			}
+			g.creds = fresh
+			err = g.refreshLocked(ctx)
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	return g.access, nil
+}
+
+func (g *Google) projectID() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.creds.ProjectID
+}
+
+// refreshLocked swaps the refresh token for a new access token. g.mu must be held.
+func (g *Google) refreshLocked(ctx context.Context) error {
 	form := url.Values{
 		"client_id":     {g.creds.ClientID},
 		"client_secret": {g.creds.ClientSecret},
@@ -67,24 +112,24 @@ func (g *Google) token(ctx context.Context) (string, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := g.httpc.Do(req)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != 200 {
 		// The body never contains our secrets, only Google's error code.
-		return "", &APIError{Status: resp.StatusCode, Body: "token: " + truncate(string(body), 200)}
+		return &APIError{Status: resp.StatusCode, Body: "token: " + truncate(string(body), 200)}
 	}
 	var tr struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &tr); err != nil || tr.AccessToken == "" {
-		return "", fmt.Errorf("uventet token-svar fra Google")
+		return fmt.Errorf("uventet token-svar fra Google")
 	}
 	g.access = tr.AccessToken
 	g.expires = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
-	return g.access, nil
+	return nil
 }
 
 func (g *Google) do(ctx context.Context, method, url string, payload any) ([]byte, error) {
@@ -169,7 +214,7 @@ func (d Device) Protocols() []string {
 
 // ListDevices is not an executeCommand call and has its own (5/min) limit; we call it rarely.
 func (g *Google) ListDevices(ctx context.Context) ([]Device, error) {
-	body, err := g.do(ctx, "GET", fmt.Sprintf("%s/enterprises/%s/devices", sdmBase, g.creds.ProjectID), nil)
+	body, err := g.do(ctx, "GET", fmt.Sprintf("%s/enterprises/%s/devices", sdmBase, g.projectID()), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +232,7 @@ func (g *Google) Execute(ctx context.Context, cam, deviceID, command string, par
 	if err := g.limiter.Acquire(ctx, cam, prio); err != nil {
 		return nil, err
 	}
-	u := fmt.Sprintf("%s/enterprises/%s/devices/%s:executeCommand", sdmBase, g.creds.ProjectID, deviceID)
+	u := fmt.Sprintf("%s/enterprises/%s/devices/%s:executeCommand", sdmBase, g.projectID(), deviceID)
 	body, err := g.do(ctx, "POST", u, map[string]any{"command": command, "params": params})
 	short := command[strings.LastIndex(command, ".")+1:]
 	if err != nil {

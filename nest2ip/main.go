@@ -56,6 +56,12 @@ func main() {
 	}
 	app.creds = creds
 	app.g = NewGoogle(creds, app.lim)
+	if err == nil && creds.Source != "indstillinger" {
+		// Google's refresh token can expire or be revoked. When the Nest integration is
+		// signed in again, Home Assistant holds the new one; pick it up without a restart.
+		haDir := env("NEST2IP_HA_CONFIG", "/homeassistant")
+		app.g.SetReload(func() (Credentials, error) { return resolveCredentials(cfg, haDir) })
+	}
 
 	idle := time.Duration(cfg.IdleTimeoutMinutes) * time.Minute
 	for i, cc := range cfg.Cameras {
